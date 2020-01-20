@@ -1,11 +1,22 @@
 package udpconn
 
 import (
+	"context"
+	"errors"
+	"io"
+	"log"
 	"net"
+	"sync"
 )
 
 type Listener struct {
-	lconn *net.UDPConn
+	ctx    context.Context
+	cancel context.CancelFunc
+
+	lconn    *net.UDPConn
+	conns    map[string]*Conn
+	mu       sync.RWMutex
+	acceptch chan *Conn
 }
 
 func Listen(addr string) (*Listener, error) {
@@ -17,18 +28,82 @@ func Listen(addr string) (*Listener, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Listener{lconn:lconn}, nil
+	ctx, cancel := context.WithCancel(context.Background())
+	l := &Listener{
+		ctx:      ctx,
+		cancel:   cancel,
+		lconn:    lconn,
+		conns:    make(map[string]*Conn),
+		mu:       sync.RWMutex{},
+		acceptch: make(chan *Conn),
+	}
+	go l.serveUDP()
+	return l, nil
 }
 
 func (l *Listener) Accept() (net.Conn, error) {
-	panic("implement me")
+	select {
+	case conn := <-l.acceptch:
+		return conn, nil
+	case <-l.ctx.Done():
+		return nil, l.ctx.Err()
+	}
 }
 
 func (l *Listener) Close() error {
-	panic("implement me")
+	l.cancel()
+	return l.lconn.Close()
 }
 
 func (l *Listener) Addr() net.Addr {
-	panic("implement me")
+	return l.lconn.LocalAddr()
 }
 
+func (l *Listener) serveUDP() {
+	buf := make([]byte, 1200)
+	for {
+		n, raddr, err := l.lconn.ReadFrom(buf)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				continue
+			}
+			log.Printf("readfrom err: %+v", err)
+			continue
+		}
+		conn, ok := l.getConn(raddr)
+		if !ok {
+			// はじめてきた相手 -> accept
+			conn = l.addConn(raddr)
+			l.acceptch <- conn
+		}
+		select {
+		case b := <-conn.readreq:
+			copy(b, buf[:n])
+			conn.readres <- n
+		}
+	}
+}
+
+func (l *Listener) addConn(raddr net.Addr) *Conn {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	closecb := func(conn *Conn) {
+		l.removeConn(conn)
+	}
+	conn := NewConn(l.ctx, closecb, raddr, l.lconn)
+	l.conns[raddr.String()] = conn
+	return conn
+}
+
+func (l *Listener) removeConn(conn *Conn) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	delete(l.conns, conn.RemoteAddr().String())
+}
+
+func (l *Listener) getConn(raddr net.Addr) (*Conn, bool) {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	conn, ok := l.conns[raddr.String()]
+	return conn, ok
+}
