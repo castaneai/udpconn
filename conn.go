@@ -19,7 +19,8 @@ type Conn struct {
 	readres chan int
 	closecb func(*Conn)
 	closech chan struct{}
-	once    sync.Once
+	closed  bool
+	mu      sync.RWMutex
 }
 
 // ctx: (context) parent listener notifies closed to Conn
@@ -33,11 +34,19 @@ func NewConn(ctx context.Context, closecb func(*Conn), raddr net.Addr, pconn net
 		readres: make(chan int),
 		closecb: closecb,
 		closech: make(chan struct{}),
-		once:    sync.Once{},
+		closed:  false,
+		mu:      sync.RWMutex{},
 	}
 }
 
 func (c *Conn) Read(b []byte) (int, error) {
+	c.mu.RLock()
+	if c.closed {
+		c.mu.RUnlock()
+		return 0, ErrNetClosing
+	}
+	c.mu.RUnlock()
+
 	c.readreq <- b
 	select {
 	case rn := <-c.readres:
@@ -50,14 +59,26 @@ func (c *Conn) Read(b []byte) (int, error) {
 }
 
 func (c *Conn) Write(b []byte) (int, error) {
+	c.mu.RLock()
+	if c.closed {
+		c.mu.RUnlock()
+		return 0, ErrNetClosing
+	}
+	c.mu.RUnlock()
+
 	return c.pconn.WriteTo(b, c.raddr)
 }
 
 func (c *Conn) Close() error {
-	c.once.Do(func() {
-		c.closecb(c)
-		close(c.closech)
-	})
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return ErrNetClosing
+	}
+
+	c.closed = true
+	c.closecb(c)
+	close(c.closech)
 	return nil
 }
 

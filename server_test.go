@@ -1,24 +1,13 @@
 package udpconn
 
 import (
-	"fmt"
-	"math/rand"
-	"net"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 )
 
-var rnd = rand.New(rand.NewSource(time.Now().UnixNano()))
-
-func randomPort() uint16 {
-	return uint16(rnd.Intn(65535-10000) + 10000)
-}
-
 func TestIdentifyConn(t *testing.T) {
-	laddr := fmt.Sprintf("127.0.0.1:%d", randomPort())
-	l, err := Listen(laddr)
+	l, err := listenRandom()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,6 +28,7 @@ func TestIdentifyConn(t *testing.T) {
 						errch <- err
 						return
 					}
+					// echo server
 					if _, err := conn.Write(buf[:n]); err != nil {
 						errch <- err
 						return
@@ -48,11 +38,11 @@ func TestIdentifyConn(t *testing.T) {
 		}
 	}()
 
-	c1, err := net.Dial("udp", laddr)
+	c1, err := l.Dial()
 	if err != nil {
 		t.Fatal(err)
 	}
-	c2, err := net.Dial("udp", laddr)
+	c2, err := l.Dial()
 	if err != nil {
 		t.Fatal(err)
 	}

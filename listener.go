@@ -2,8 +2,6 @@ package udpconn
 
 import (
 	"context"
-	"errors"
-	"io"
 	"log"
 	"net"
 	"sync"
@@ -64,15 +62,18 @@ func (l *Listener) serveUDP() {
 	for {
 		n, raddr, err := l.lconn.ReadFrom(buf)
 		if err != nil {
-			if errors.Is(err, io.EOF) {
-				continue
+			select {
+			case <-l.ctx.Done():
+				return
+			default:
 			}
-			log.Printf("readfrom err: %+v", err)
+			// TODO: error handling on recvfrom
+			log.Printf("recvfrom err: %+v", err)
 			continue
 		}
 		conn, ok := l.getConn(raddr)
 		if !ok {
-			// はじめてきた相手 -> accept
+			// Accept by first packet
 			conn = l.addConn(raddr)
 			l.acceptch <- conn
 		}
@@ -80,6 +81,8 @@ func (l *Listener) serveUDP() {
 		case b := <-conn.readreq:
 			copy(b, buf[:n])
 			conn.readres <- n
+		case <-l.ctx.Done():
+			return
 		}
 	}
 }
